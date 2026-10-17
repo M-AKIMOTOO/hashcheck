@@ -395,7 +395,7 @@ def duration_bytes(s:str)->int:
     if not seconds>0 or result>0xffffffffffffffff:raise HashcheckError(f"invalid DRG DUR {s!r}")
     return int(result+0.5)
 
-def make_shell(drg:str,log:str,output:str)->int:
+def make_shell(drg:str,log:str,output:str,every:int)->int:
     rec_sec,rec13=record_start(log)
     try:
         with open(drg,encoding="utf-8",errors="replace") as f:lines=f.readlines()
@@ -427,14 +427,14 @@ def make_shell(drg:str,log:str,output:str)->int:
         if off>0xffffffffffffffff:raise HashcheckError(f"DRG offset overflow at {start}")
         count+=1
         out.extend((f"# scan {count}  target={t[0]}  start={start}  dur={t[5]} s",
-                    f'"$HASHCHECK" -o "{d}{{PREFIX}}_{start}.hash" --offset {off} --length {length} --block {DATA_RATE} "$INPUT"',""))
+                    f'"$HASHCHECK" -o "{d}{{PREFIX}}_{start}.hash" --offset {off} --length {length} --block {DATA_RATE} --every {every} "$INPUT"',""))
     if not count:raise HashcheckError(f"no scans found in $SKED section of {drg}")
-    out.append(f'echo "hashcheck: completed {count} scan ranges (1-second SHA-256 blocks)"')
+    out.append(f'echo "hashcheck: completed {count} scan ranges (1-second blocks sampled every {every} seconds)"')
     try:
         with open(output,"w",encoding="utf-8",newline="\n") as f:f.write("\n".join(out)+"\n")
         os.chmod(output,0o755)
     except OSError as e:raise HashcheckError(f"cannot write {output!r}: {e.strerror}") from e
-    print(f"Wrote {output} : {count} scan ranges (1-second blocks), recording start={rec13}, data rate={DATA_RATE} bytes/s")
+    print(f"Wrote {output} : {count} scan ranges (1-second blocks, every {every} seconds), recording start={rec13}, data rate={DATA_RATE} bytes/s")
     return 0
 
 USAGE="""hashcheck.py - SHA-256 file/tree/range/block manifests (Python 3.10+)
@@ -442,8 +442,8 @@ Usage:
   hashcheck.py PATH
   hashcheck.py [--exclude RULE]... -o OUTPUT.hash PATH [PATH ...]
   hashcheck.py [ -o OUTPUT.hash ] --offset OFFSET --length LENGTH FILE
-  hashcheck.py [ -o OUTPUT.hash ] [--offset OFFSET --length LENGTH] --block BYTES FILE
-  hashcheck.py --mksh SCHEDULE.DRG --log RECORD.log [ -o OUTPUT.sh ]
+  hashcheck.py [ -o OUTPUT.hash ] [--offset OFFSET --length LENGTH] --block BYTES [--every N] FILE
+  hashcheck.py --mksh SCHEDULE.DRG --log RECORD.log [--every N] [ -o OUTPUT.sh ]
   hashcheck.py MANIFEST.hash
   hashcheck.py A.hash B.hash
   hashcheck.py -c A.hash B.hash
@@ -455,6 +455,7 @@ Options:
   --exclude RULE      Omit files by extension (.tmp), basename (name.tmp), or root-relative path (sub/name.tmp); repeatable.
                       Use file:.gitignore for an exact dotfile name or ext:.gz for an explicit extension.
   --block N           Split data into independent N-byte SHA-256 blocks.
+  --every N           Hash every Nth block (default 10); with --mksh, every N seconds.
   --mksh DRG          Generate 1-second hash commands from DRG $SKED.
   --log LOG           Recording log for --mksh (REQRECSTART/RECSTART required).
   -h, --help          Show help. v1 manifests remain readable; new manifests use v2.
@@ -496,42 +497,48 @@ def hash_range(output:str,path:str,offset:int,length:int)->int:
     print(f"SHA-256  {digest.hex()}  {basename(path)} (range offset={offset} length={length})")
     print(f"Wrote {output} : range offset={offset} length={length}");return 0
 
-def hash_blocks(output:str,path:str,offset:int,length:int,block_size:int)->int:
+def hash_blocks(output:str,path:str,offset:int,length:int,block_size:int,every:int)->int:
     try:
         if not stat.S_ISREG(os.lstat(path).st_mode):raise HashcheckError(f"block input must be a regular file: {path}")
         size=os.path.getsize(path)
         if offset>size or length>size-offset:raise HashcheckError(f"requested block range is outside file: {path}")
         records=[]
         units=(length+block_size-1)//block_size
-        progress=Progress("Hashing",length,units)
+        sample_units=(units-1)//every+1 if units else 0
+        last_index=(sample_units-1)*every if sample_units else 0
+        sampled_bytes=(sample_units-1)*block_size+min(block_size,length-last_index*block_size) if sample_units else 0
+        progress=Progress("Hashing",sampled_bytes,sample_units)
         with open(path,"rb") as f:
-            f.seek(offset);remain=length;relative=0
-            while remain:
-                n=min(remain,block_size);h=hashlib.sha256();todo=n
+            f.seek(offset)
+            block_index=0
+            while block_index<units:
+                relative=block_index*block_size
+                if every>1:f.seek(offset+relative)
+                n=min(block_size,length-relative);h=hashlib.sha256();todo=n
                 while todo:
                     data=f.read(min(CHUNK,todo))
                     if not data:raise HashcheckError(f"cannot read block range: {path}")
                     h.update(data);todo-=len(data);progress.add(len(data))
                 records.append(Record(BLOCK,n,h.digest(),f"+{relative:020d}"))
-                remain-=n;relative+=n;progress.unit_done()
+                progress.unit_done()
+                block_index+=every
         progress.finish()
     except OSError as e:raise HashcheckError(f"cannot read block range {path!r}: {e.strerror}") from e
     write_manifest(output,records,0,RANGE_FLAG|BLOCK_FLAG,offset)
     for record in records:
         print(f"SHA-256  {record.digest.hex()}  {record.path} (block size={record.size})")
-    print(f"Wrote {output} : {len(records)} blocks, offset={offset} length={length} block={block_size}");return 0
-
+    print(f"Wrote {output} : {len(records)} sampled blocks, offset={offset} length={length} block={block_size} every={every}");return 0
 def main(argv:list[str]|None=None)->int:
     args=list(sys.argv[1:] if argv is None else argv)
     if not args:sys.stderr.write(USAGE);return 0
-    output=mksh=log=None;offset=length=block=None;compare_mode=False;paths:list[str]=[];exclude_values:list[str]=[];i=0
+    output=mksh=log=None;offset=length=block=every=None;compare_mode=False;paths:list[str]=[];exclude_values:list[str]=[];i=0
     while i<len(args):
         a=args[i]
         if a in ("-h","--help"):sys.stdout.write(USAGE);return 0
         if a in ("-c","--compare"):
             if compare_mode:sys.stderr.write(USAGE);return 2
             compare_mode=True
-        elif a in ("-o","--mksh","--log","--offset","--length","--block","--exclude"):
+        elif a in ("-o","--mksh","--log","--offset","--length","--block","--every","--exclude"):
             if i+1>=len(args):sys.stderr.write(USAGE);return 2
             i+=1;v=args[i]
             if a=="--exclude":
@@ -554,6 +561,9 @@ def main(argv:list[str]|None=None)->int:
                 elif a=="--length":
                     if length is not None:sys.stderr.write(USAGE);return 2
                     length=n
+                elif a=="--every":
+                    if every is not None or n==0:sys.stderr.write(USAGE);return 2
+                    every=n
                 else:
                     if block is not None or n==0:sys.stderr.write(USAGE);return 2
                     block=n
@@ -568,12 +578,13 @@ def main(argv:list[str]|None=None)->int:
                 if not log:print("hashcheck: --mksh requires --log RECORD.log",file=sys.stderr)
                 sys.stderr.write(USAGE);return 2
             out=output or "hashcheck_"+os.path.splitext(basename(mksh))[0]+".sh"
-            return make_shell(mksh,log,out)
+            return make_shell(mksh,log,out,every or 10)
         if log is not None:raise HashcheckError("--log is only valid with --mksh")
         if compare_mode:
-            if output is not None or offset is not None or length is not None or block is not None or excludes or len(paths)!=2:
+            if output is not None or offset is not None or length is not None or block is not None or every is not None or excludes or len(paths)!=2:
                 sys.stderr.write(USAGE);return 2
             return compare(read_manifest(paths[0]),read_manifest(paths[1]))
+        if every is not None and block is None:raise HashcheckError("--every requires --block or --mksh")
         if (offset is None)!=(length is None):raise HashcheckError("--offset and --length must be specified together")
         if block is not None:
             if excludes or len(paths)!=1:sys.stderr.write(USAGE);return 2
@@ -583,7 +594,7 @@ def main(argv:list[str]|None=None)->int:
                 size=os.path.getsize(paths[0])
             else:size=length
             out=output or (f"{basename(paths[0])}.{off}+{size}.block{block}.hash" if offset is not None else f"{basename(paths[0])}.block{block}.hash")
-            return hash_blocks(out,paths[0],off,size,block)
+            return hash_blocks(out,paths[0],off,size,block,every or 10)
         if offset is not None:
             if excludes or len(paths)!=1:sys.stderr.write(USAGE);return 2
             return hash_range(output or f"{basename(paths[0])}.{offset}+{length}.hash",paths[0],offset,length)

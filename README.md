@@ -70,6 +70,7 @@ hashcheck
 --offset N          range hash の開始 byte offset。--length と組で使用。
 --length N          range hash で読む byte 数。--offset と組で使用。
 --block N           対象データを N byte ごとの独立した SHA-256 block に分割。
+--every N           N 個ごとに hash (default: 10)。--mksh では N 秒ごと。
 --exclude RULE      ファイルを拡張子 (.tmp)、basename (name.tmp)、または root からの相対パス (sub/name.tmp) で除外。繰り返し指定可能。
 --mksh DRG          DRG の $SKED から range hash 用 shell script を生成。
 --log LOG           --mksh で必須。REQRECSTART / RECSTART から記録開始時刻を取得。
@@ -225,10 +226,11 @@ hashcheck -o scan.hash \
   --offset 15360000000 \
   --length 153600000000 \
   --block 256000000 \
+  --every 1 \
   observation.vdif
 ```
 
-`1 s = 256000000 byte` の観測データなら、上の例は 600 秒 scan を 600 個の独立した 1 秒 SHA-256 にします。
+`1 s = 256000000 byte` の観測データなら、上の例は 600 秒 scan を 600 個の独立した 1 秒 SHA-256 にします (`--every 1`)。
 
 manifest の表示例:
 
@@ -243,20 +245,20 @@ BLOCK  <SHA-256>   256000000  +00000000000512000000
 ...
 ```
 
-BLOCK の末尾は、選択した range の先頭からの相対 byte offset です。そのため、元巨大ファイルの scan range と、受信後の scan `.raw` を同じ `--block` サイズで hash すると直接比較できます。
+BLOCK の末尾は、選択した range の先頭からの相対 byte offset です。そのため、元巨大ファイルの scan range と、受信後の scan `.raw` を同じ `--block` サイズと `--every` 間隔で hash すると直接比較できます。
 
 送信元:
 
 ```sh
 hashcheck -o source.hash \
   --offset OFFSET --length LENGTH \
-  --block 256000000 original.vdif
+  --block 256000000 --every 1 original.vdif
 ```
 
 受信側:
 
 ```sh
-hashcheck -o received.hash --block 256000000 received.raw
+hashcheck -o received.hash --block 256000000 --every 1 received.raw
 ```
 
 比較:
@@ -273,7 +275,7 @@ CHANGED   +00000000000256000000
 
 のように、どの 1 秒 block が異なるか分かります。
 
-**block 化は読み込む総データ量を減らしません。** 600 秒 scan は 600 秒分すべてを読みます。利点は、破損・不一致を 1 秒単位で特定できることです。
+`--every N` は N 個ごとの block だけを読みます。既定値は 10 なので、600 秒 scan では約 60 秒分を hash します。全 block を処理するには `--every 1` を指定します。サンプルは各 range の先頭から数え、manifest には元の相対 offset を記録します。
 
 ## 5. DRG から 1 秒 block hash shell script を生成
 
@@ -281,6 +283,12 @@ CHANGED   +00000000000256000000
 
 ```sh
 hashcheck --mksh I26289X.DRG --log i26289x_ch3_ymg34cl.log
+```
+
+全秒を hash する場合は `--every 1` を指定します。省略時は 10 秒ごとに 1 秒分だけを読みます:
+
+```sh
+hashcheck --mksh I26289X.DRG --log i26289x_ch3_ymg34cl.log --every 1
 ```
 
 記録開始時刻は `--log` から必ず取得します。ログ内に `REQRECSTART` または `RECSTART` が無い場合は生成を拒否します。
@@ -298,10 +306,11 @@ hashcheck -o "${PREFIX}_YYYYDOYhhmmss.hash" \
   --offset OFFSET \
   --length SCAN_BYTES \
   --block 256000000 \
+  --every 10 \
   "$INPUT"
 ```
 
-です。つまり 60 秒 scan なら 60 block、120 秒なら 120 block、600 秒なら 600 block を **1回のファイル open/seek と連続 read** で計算します。1秒ごとに別の `hashcheck` プロセスを起動するわけではありません。
+です。省略時は各 scan の 0 秒目、10 秒目、20 秒目というように hash し、残りの byte は seek で飛ばします。`--every 1` なら全秒を hash します。scan ごとの `hashcheck` 起動は 1 回です。
 
 生成 shell script:
 
@@ -343,8 +352,8 @@ Result : DIFFERENT
 - SHA-256 はファイルの raw byte 列に対して計算します。
 - `--offset`, `--length`, `--block` はすべて byte 単位です。
 - `--block` は block ごとに独立した SHA-256 を作るため、通常のファイル全体 SHA-256 とは別物です。
-- block manifest 同士を比較するときは同じ block size を使用してください。
-- `--mksh` では block size は常に 256000000 byte (= 1 秒) です。
+- block manifest 同士を比較するときは同じ block size と `--every` 間隔を使用してください。
+- `--mksh` では block size は常に 256000000 byte (= 1 秒) です。`--every N` は各 scan の先頭から N 秒ごとに 1 block を hash します (default: 10)。
 - timestamp、permission、uid/gid、元の絶対 PATH は比較対象ではありません。
 - manifest 自身にも SHA-256 があり、破損時は `manifest SHA : FAILED` になります。
 - v1/v2 manifest の読み込み互換性は維持します。
