@@ -23,7 +23,7 @@ Python 3.10以降で動作し、標準ライブラリ以外のパッケージは
     python3 hashcheck.py FILE_OR_DIRECTORY
     python3 hashcheck.py --help
 
-hashcheck.py は実行可能です。make install で ~/bin/hashcheck にインストールできます。インストール先を変更する場合は BINDIR=/path/to/bin make install を使います。
+C 版は make install で ~/bin/hashcheck にインストールできます。インストール先を変更する場合は BINDIR=/path/to/bin make install を使います。Python 版は python3 hashcheck.py で実行できます。
 
 ## C版をビルドする場合
 

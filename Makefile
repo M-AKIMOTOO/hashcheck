@@ -12,9 +12,9 @@ endif
 all: check-python native
 check-python: hashcheck.py
 	$(PYTHON) hashcheck.py --help >/dev/null
-install: check-python
+install: native
 	mkdir -p "$(BINDIR)"
-	install -m 755 hashcheck.py "$(BINDIR)/hashcheck"
+	install -m 755 hashcheck "$(BINDIR)/hashcheck"
 	@printf 'installed: %s\n' "$(BINDIR)/hashcheck"
 native: hashcheck
 hashcheck: hashcheck.c
