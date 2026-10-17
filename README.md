@@ -27,11 +27,10 @@ C 版は make install で ~/bin/hashcheck にインストールできます。�
 
 ## C版をビルドする場合
 
-hashcheck.c はC版として残しています。C版をビルドする場合は:
+Makefile は C 版のビルド・インストール・clean のみを扱います。Python 版と Zig 版は、それぞれ下記の方法で直接実行してください。C 版のビルドは:
 
-    make native
+    make
 
-Windows向けのZigビルドは make win11-zig です。
 
 ## SHA-256 の高速化
 
