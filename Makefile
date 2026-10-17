@@ -1,4 +1,4 @@
-CC ?= cc
+CC = gcc
 CPPFLAGS ?=
 CFLAGS ?= -O3 -std=gnu99 -Wall -Wextra -D_FILE_OFFSET_BITS=64
 BINDIR ?= $(HOME)/bin
